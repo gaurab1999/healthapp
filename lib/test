@@ -1,0 +1,185 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:healthapp/hive.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:sensors_plus/sensors_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+void main() async {
+  await Hive.initFlutter();
+  Hive.registerAdapter(DoubleListAdapter());
+
+  // Open the Hive box for storing the step count
+  await Hive.openBox<int>('stepBox');
+  runApp(MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Step Count',
+      home: StepCounterScreen(),
+    );
+  }
+}
+
+class StepCounterScreen extends StatefulWidget {
+  @override
+  _StepCounterScreenState createState() => _StepCounterScreenState();
+}
+
+class _StepCounterScreenState extends State<StepCounterScreen> {
+  double alpha = 0.98;
+  int stepCount = 0;
+  double prevGyroValue = 0.0;
+  double prevAccY = 0.0;
+  List<double> magnitudes = [];
+  final int maxMagnitudes = 300;
+  double threshold = 1.5; // Initial threshold value, adjust as needed
+  DateTime? prevAccEventTime; // Variable to store the previous accelerometer event time
+  DateTime? prevGyroEventTime; // Variable to store the previous gyroscope event time
+  StreamSubscription<UserAccelerometerEvent>? accelerometerSubscription;
+  StreamSubscription<GyroscopeEvent>? gyroscopeSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Load step count and magnitudes from shared preferences
+    loadStepData();
+
+    // Set up listener for accelerometer events
+    accelerometerSubscription = userAccelerometerEvents.listen((UserAccelerometerEvent event) {
+      // Calculate time interval (dt) between accelerometer sensor readings
+      double accDt = 0.0;
+      if (prevAccEventTime != null) {
+        accDt = DateTime.now().difference(prevAccEventTime!).inMicroseconds / 1000000.0;
+      }
+      prevAccEventTime = DateTime.now();
+
+      // Implement complementaryFilter method with accelerometer data
+      double filteredAccValue = complementaryFilter(prevAccY, event.y, accDt, alpha);
+
+      // Use the filteredAccValue for step counting and motion tracking (if needed)
+      if (isStepDetected(filteredAccValue)) {
+        setState(() {
+          stepCount++;
+          // Save step count to shared preferences
+          saveStepData(stepCount, magnitudes);
+        });
+        // Calculate the magnitude of the accelerometer data
+        double magnitude = event.y.abs();
+
+        // Add the magnitude to the list
+        magnitudes.add(magnitude);
+      }
+
+      // Update previous accelerometer reading
+      prevAccY = event.y;
+    });
+
+    // Set up listener for gyroscope events
+    gyroscopeSubscription = gyroscopeEvents.listen((GyroscopeEvent event) {
+      // Calculate time interval (dt) between gyroscope sensor readings
+      double gyroDt = 0.0;
+      if (prevGyroEventTime != null) {
+        gyroDt = DateTime.now().difference(prevGyroEventTime!).inMicroseconds / 1000000.0;
+      }
+      prevGyroEventTime = DateTime.now();
+
+      // Use gyroscope data for complementary filtering (if needed)
+      double gyroValue = event.z; // Use the appropriate axis based on your device orientation
+
+      // Implement complementaryFilter method with gyroscope data (if needed)
+      // double filteredGyroValue = complementaryFilter(gyroValue, prevAccY, gyroDt, alpha);
+
+      // Use the filteredGyroValue for step counting and motion tracking (if needed)
+      // if (isStepDetected(filteredGyroValue)) {
+      //   setState(() {
+      //     stepCount++;
+      //     // Save step count to shared preferences
+      //     saveStepData(stepCount, magnitudes);
+      //   });
+      //   // Calculate the magnitude of the accelerometer data
+      //   double magnitude = prevAccY.abs();
+
+      //   // Add the magnitude to the list
+      //   magnitudes.add(magnitude);
+      // }
+
+      // Update previous gyroscope reading
+      prevGyroValue = gyroValue;
+    });
+  }
+
+  @override
+  void dispose() {
+    // Dispose of the sensor listeners
+    accelerometerSubscription?.cancel();
+    gyroscopeSubscription?.cancel();
+    super.dispose();
+  }
+
+  void loadStepData() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    setState(() {
+      stepCount = prefs.getInt('stepCount') ?? 0;
+
+      final String magnitudesJson = prefs.getString('magnitudes') ?? '[]';
+      magnitudes = List<double>.from(jsonDecode(magnitudesJson));
+    });
+  }
+
+  void saveStepData(int count, List<double> magnitudes) async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    prefs.setInt('stepCount', count);
+
+    final String magnitudesJson = jsonEncode(magnitudes);
+    prefs.setString('magnitudes', magnitudesJson);
+  }
+
+  double complementaryFilter(double accelValue, double eventValue, double dt, double alpha) {
+    // Calculate the complementary filtered value by blending accelerometer and event data
+    return (alpha * (accelValue + eventValue * dt)) + ((1 - alpha) * eventValue);
+  }
+
+  void updateThreshold() {
+    // Calculate a new threshold based on the average magnitude of previous steps
+    double avgMagnitude = magnitudes.reduce((a, b) => a + b) / magnitudes.length;
+    threshold = avgMagnitude * 1.2; // Adjust the multiplication factor as needed
+  }
+
+  bool isStepDetected(double filteredAccValue) {
+    // Check if a step is detected based on peak detection and the dynamic threshold
+    if (magnitudes.isEmpty) return false;
+
+    // If the filteredAccValue is greater than the threshold and it's significantly larger than the previous magnitude,
+    // consider it as a peak and count it as a step
+    double lastMagnitude = magnitudes.last;
+    if (filteredAccValue > threshold && filteredAccValue > lastMagnitude * 1.1) {
+      magnitudes[magnitudes.length - 1] = filteredAccValue;
+      return true;
+    }
+
+    return false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Show the step count on the screen
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Step Counter'),
+      ),
+      body: Center(
+        child: Text(
+          'Step Count: $stepCount',
+          style: TextStyle(fontSize: 24),
+        ),
+      ),
+    );
+  }
+}
