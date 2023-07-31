@@ -1,28 +1,27 @@
-  import 'dart:async';
-  import 'dart:math';
+import 'dart:async';
+import 'dart:math';
 
-  import 'package:fl_chart/fl_chart.dart';
-  import 'package:flutter/material.dart';
-  import 'package:sensors_plus/sensors_plus.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/material.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 
-  void main() async {
+void main() async {
+  runApp(const MyApp());
+}
 
-    runApp(const MyApp());
-  }
-
-  class MyApp extends StatelessWidget {
+class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-    @override
-    Widget build(BuildContext context) {
-      return const MaterialApp(
-        title: 'Step Count',
-        home: StepTrackingScreen(),
-      );
-    }
+  @override
+  Widget build(BuildContext context) {
+    return const MaterialApp(
+      title: 'Step Count',
+      home: StepTrackingScreen(),
+    );
   }
+}
 
-  class StepTrackingScreen extends StatefulWidget {
+class StepTrackingScreen extends StatefulWidget {
   const StepTrackingScreen({super.key});
 
   @override
@@ -30,21 +29,31 @@
 }
 
 class _StepTrackingScreenState extends State<StepTrackingScreen> {
+  // Lists to store accelerometer and gyroscope data for each axis.
   final List<FlSpot> _accelerometerDataX = [];
   final List<FlSpot> _accelerometerDataY = [];
+  final List<FlSpot> _accelerometerDataZ = [];
   final List<FlSpot> _accelerometerMagnitudeData = [];
   final List<FlSpot> _gyroscopeData = [];
+
+  // Step count and tracking status.
   int _stepCount = 0;
   bool _isTracking = false;
-  StreamSubscription<UserAccelerometerEvent>? _userAccelerometerSubscription;
+
+  // Stream subscriptions to listen to accelerometer and gyroscope events.
+  StreamSubscription<AccelerometerEvent>? _userAccelerometerSubscription;
   StreamSubscription<GyroscopeEvent>? _gyroscopeSubscription;
 
+  // Minimum time between consecutive steps (milliseconds).
+  final int _minTimeBetweenSteps = 600;
+
   // Threshold for step detection (adjust as needed).
-  final double _threshold = 1.8;
+  final double _threshold = 11.0;
 
   // Gyroscope threshold for detecting swinging (adjust as needed).
-  final double _gyroscopeThreshold = 5.0;
+  final double _gyroscopeThreshold = 2.0;
 
+  DateTime? _lastStepTime;
 
   @override
   void initState() {
@@ -57,14 +66,18 @@ class _StepTrackingScreenState extends State<StepTrackingScreen> {
       _isTracking = true;
     });
 
+    // Listen to accelerometer events.
     _userAccelerometerSubscription =
-        userAccelerometerEvents.listen((UserAccelerometerEvent event) {
+        accelerometerEvents.listen((AccelerometerEvent event) {
       if (_isTracking) {
         setState(() {
+          // Add accelerometer data to respective lists for each axis.
           _accelerometerDataX
               .add(FlSpot(_accelerometerDataX.length.toDouble(), event.x));
           _accelerometerDataY
               .add(FlSpot(_accelerometerDataY.length.toDouble(), event.y));
+          _accelerometerDataZ
+              .add(FlSpot(_accelerometerDataY.length.toDouble(), event.z));
 
           // Calculate magnitude and add it to the list.
           double magnitude = _computeMagnitude(event.x, event.y, event.z);
@@ -77,22 +90,21 @@ class _StepTrackingScreenState extends State<StepTrackingScreen> {
       }
     });
 
-    // Enable gyroscope data
+    // Listen to gyroscope events.
     _gyroscopeSubscription = gyroscopeEvents.listen((GyroscopeEvent event) {
       if (_isTracking) {
         setState(() {
-          _gyroscopeData.add(FlSpot(_gyroscopeData.length.toDouble(),
-              _computeGyroscopeMagnitude(event.x, event.y, event.z)));
+          // Add gyroscope data for the Z-axis to the list.
+          _gyroscopeData.add(FlSpot(_gyroscopeData.length.toDouble(), event.z));
+
+          // Apply the moving average filter to the gyroscope data for each axis.
+          // You can implement the moving average filter here if needed.
         });
       }
     });
   }
 
   double _computeMagnitude(double x, double y, double z) {
-    return sqrt(x * x + y * y + z * z);
-  }
-
-  double _computeGyroscopeMagnitude(double x, double y, double z) {
     return sqrt(x * x + y * y + z * z);
   }
 
@@ -104,19 +116,28 @@ class _StepTrackingScreenState extends State<StepTrackingScreen> {
 
   void _resetTracking() {
     setState(() {
+      // Stop tracking and clear all data lists and step count.
       _isTracking = false;
       _accelerometerDataX.clear();
       _accelerometerDataY.clear();
+      _accelerometerDataZ.clear();
       _accelerometerMagnitudeData.clear();
       _gyroscopeData.clear();
       _stepCount = 0;
     });
+
+    // Start tracking again.
     _startTracking();
   }
 
   void _detectSteps() {
     if (_accelerometerMagnitudeData.length < 3) {
       // Not enough data points for step detection.
+      return;
+    }
+
+    // Check if the phone is swinging. If yes, return early and don't count the step.
+    if (_detectSwinging()) {
       return;
     }
 
@@ -127,24 +148,22 @@ class _StepTrackingScreenState extends State<StepTrackingScreen> {
     double prevPrevMagnitude =
         _accelerometerMagnitudeData[_accelerometerMagnitudeData.length - 3].y;
 
+    // Check if a possible step is detected based on threshold and increasing magnitude values.
     if (magnitude > _threshold &&
         magnitude > prevMagnitude &&
-        magnitude > prevPrevMagnitude && magnitude < 10) {
-      // A possible step detected.           
-        // Check gyroscope data before considering the step
-        if (_gyroscopeData.isNotEmpty) {
-          double gyroscopeMagnitude = _gyroscopeData.last.y;
-          if (gyroscopeMagnitude > _gyroscopeThreshold) {
-            // Phone is rotating, indicating potential swinging.
-            return;
-          }
-        }
-
+        magnitude > prevPrevMagnitude) {
+      // A possible step detected.
+      DateTime now = DateTime.now();
+      if (_lastStepTime == null ||
+          now.difference(_lastStepTime!) >
+              Duration(milliseconds: _minTimeBetweenSteps)) {
         // It's a valid step (not too close to the previous step).
         setState(() {
-          _stepCount++;         
+          _stepCount++;
+          _lastStepTime = now;
         });
-      }    
+      }
+    }
   }
 
   @override
@@ -152,6 +171,29 @@ class _StepTrackingScreenState extends State<StepTrackingScreen> {
     _gyroscopeSubscription?.cancel();
     _userAccelerometerSubscription?.cancel();
     super.dispose();
+  }
+
+  bool _detectSwinging() {
+    if (_gyroscopeData.length < 3) {
+      // Not enough data points for swinging detection.
+      return false;
+    }
+
+    // Get the latest angular velocity value from the gyroscope data for the Z-axis.
+    double angularChange = _gyroscopeData.last.y;
+    double prevAngularChange = _gyroscopeData[_gyroscopeData.length - 2].y;
+    double prevPrevAngularChange = _gyroscopeData[_gyroscopeData.length - 3].y;
+
+    // If there is a significant change in angular velocity,
+    // it indicates that the phone is being swung.
+    if (angularChange > _gyroscopeThreshold &&
+        angularChange > prevAngularChange &&
+        angularChange > prevPrevAngularChange) {
+      // Add your logic here to handle phone swinging.
+      print("Phone swinging detected!");
+      return true;
+    }
+    return false;
   }
 
   @override
@@ -163,6 +205,7 @@ class _StepTrackingScreenState extends State<StepTrackingScreen> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // Charts for displaying accelerometer data for each axis.
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 8),
             child: Text("X Axes"),
@@ -185,6 +228,16 @@ class _StepTrackingScreenState extends State<StepTrackingScreen> {
           ),
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 8),
+            child: Text("Z-Axis"),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: _buildChart(_accelerometerDataZ, Colors.purple, 'Z-axis'),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 8),
             child: Text("Magnitude"),
           ),
           Expanded(
@@ -194,9 +247,10 @@ class _StepTrackingScreenState extends State<StepTrackingScreen> {
                   _accelerometerMagnitudeData, Colors.green, 'Magnitude'),
             ),
           ),
+          const SizedBox(height: 16),
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 8),
-            child: Text("Gyroscope"),
+            child: Text("Gyroscope Z-Axis"),
           ),
           Expanded(
             child: Padding(
