@@ -38,6 +38,11 @@ dependencies:
   sensors_plus: ^3.0.2
   fl_chart: ^0.63.0  
   shared_preferences: ^2.2.0  
+  geolocator: ^9.0.2
+  baseflow_plugin_template: ^2.1.2
+  activity_recognition_flutter: ^5.0.0
+  permission_handler: ^10.4.3
+  syncfusion_flutter_charts: ^22.2.10
 
 dev_dependencies:
   flutter_test:
